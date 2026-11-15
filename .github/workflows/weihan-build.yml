@@ -1,0 +1,68 @@
+# Personal build of the macOS app (fork yiyi-wei/ghostty, branch weihan).
+# Ad-hoc signed, not notarized, no Sparkle updates. Install by downloading the
+# artifact; never published as a release.
+name: weihan-build
+
+on:
+  push:
+    branches: [weihan]
+  workflow_dispatch:
+
+concurrency:
+  group: weihan-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          xcodebuild -version
+
+      - name: Ensure Metal toolchain
+        run: |
+          if ! xcrun -f metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun -f metal
+
+      - name: Install gettext (msgfmt for i18n)
+        run: |
+          brew install gettext
+          echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      # GhosttyKit.xcframework + resources, built by Zig.
+      - name: Build GhosttyKit
+        run: zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+
+      # Native app. ReleaseLocal = ad-hoc signing ("-"), no team required.
+      - name: Build Ghostty.app
+        run: |
+          cd macos
+          xcodebuild -target Ghostty -configuration ReleaseLocal
+
+      # Info.plist is left untouched: editing it after xcodebuild breaks the signature.
+      - name: Verify and package
+        run: |
+          APP=macos/build/ReleaseLocal/Ghostty.app
+          codesign --verify --deep --strict "$APP"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Ghostty-weihan.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ghostty-weihan-${{ github.sha }}
+          path: Ghostty-weihan.zip
+          retention-days: 14
