@@ -48,8 +48,14 @@ final class SidebarModel: ObservableObject {
     private static var globalVisible = true
     private static let visibilityDidChange = Notification.Name("GhosttySidebarVisibilityDidChange")
 
+    /// Splits reflow while the sidebar slides; their "cols ⨯ rows" resize overlay should
+    /// not flash for that. Read by `SurfaceResizeOverlay`. Main thread only.
+    nonisolated(unsafe) static var resizeOverlayQuietUntil: ContinuousClock.Instant?
+
     private func applyVisibility(animated: Bool) {
         guard isVisible != Self.globalVisible else { return }
+        // Animation length plus slack for the last layout pass to land.
+        Self.resizeOverlayQuietUntil = ContinuousClock.now + .milliseconds(600)
         if animated {
             withAnimation(.easeInOut(duration: 0.16)) { isVisible = Self.globalVisible }
         } else {

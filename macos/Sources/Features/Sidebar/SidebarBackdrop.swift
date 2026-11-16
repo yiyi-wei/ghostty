@@ -88,6 +88,20 @@ struct SidebarBackdropView: View {
                             .frame(width: rect.width, height: rect.height)
                             .offset(x: rect.minX, y: rect.minY - terminal.minY)
                     }
+                    .overlay(alignment: .topLeading) {
+                        // A wide terminal can use up the picture before the window's left
+                        // edge (cover fit only overflows on one axis). Fill the leftover with
+                        // the picture mirrored at its edge: seamless where they meet, and no
+                        // shift of the part that continues the terminal.
+                        if rect.minX > 0 {
+                            Image(decorative: image, scale: 1)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaleEffect(x: -1, y: 1)
+                                .frame(width: rect.width, height: rect.height)
+                                .offset(x: rect.minX - rect.width, y: rect.minY - terminal.minY)
+                        }
+                    }
                     .clipped()
                     .offset(y: terminal.minY)
                     .opacity(backdrop.imageOpacity)

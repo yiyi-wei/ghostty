@@ -244,6 +244,16 @@ extension Ghostty {
             // Hidden if we already processed this size.
             if lastSize == geoSize { return true; }
 
+            // Sidebar slide (weihan fork): the split reflows because the sidebar moved, not
+            // because the user resized anything. Swallow these sizes like a focus resize.
+            if let quiet = SidebarModel.resizeOverlayQuietUntil, ContinuousClock.now < quiet {
+                DispatchQueue.main.async {
+                    lastSize = geoSize
+                }
+
+                return true
+            }
+
             // If we were focused recently we hide it as well. This avoids showing
             // the resize overlay when SwiftUI is lazily resizing.
             if let instant = focusInstant {

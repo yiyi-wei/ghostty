@@ -133,7 +133,8 @@ final class TerminalGestures {
             pinchFired = true
             let tree = controller.surfaceTree
             if pinch > 0 {
-                if tree.zoomed == nil, tree.isSplit, let target = surface(under: event, in: controller) {
+                // Zoom what the pointer is over, not what has focus: no click needed first.
+                if tree.zoomed == nil, tree.isSplit, let target = surfaceUnderPointer(in: controller) {
                     postZoomToggle(target)
                 }
             } else if case let .leaf(view)? = tree.zoomed {
@@ -143,12 +144,32 @@ final class TerminalGestures {
         return nil
     }
 
-    private func surface(under event: NSEvent, in controller: BaseTerminalController) -> Ghostty.SurfaceView? {
-        for view in controller.surfaceTree {
-            let p = view.convert(event.locationInWindow, from: nil)
-            if view.bounds.contains(p) { return view }
+    /// The split under the pointer right now, or nil (pointer over the sidebar, a divider…).
+    /// Uses the window's live pointer position rather than the gesture event's location, and
+    /// deliberately does not fall back to the focused split: zooming the wrong pane is worse
+    /// than doing nothing.
+    private func surfaceUnderPointer(in controller: BaseTerminalController) -> Ghostty.SurfaceView? {
+        guard let window = controller.window else { return nil }
+        let location = window.mouseLocationOutsideOfEventStream
+
+        // AppKit's own hit test first: whatever a click here would land on.
+        if let content = window.contentView {
+            var hit = content.hitTest(content.superview?.convert(location, from: nil) ?? location)
+            while let view = hit {
+                if let surface = view as? Ghostty.SurfaceView,
+                   controller.surfaceTree.contains(where: { $0 === surface }) {
+                    return surface
+                }
+                hit = view.superview
+            }
         }
-        return controller.focusedSurface
+
+        // SwiftUI overlays above a split can swallow the hit test; fall back to geometry.
+        for view in controller.surfaceTree {
+            let frame = view.convert(view.bounds, to: nil)
+            if frame.contains(location) { return view }
+        }
+        return nil
     }
 
     private func postZoomToggle(_ view: Ghostty.SurfaceView) {
