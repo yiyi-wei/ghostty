@@ -1132,7 +1132,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             SidebarTerminalRoot(model: sidebar, onNewTab: { [weak self] in
                 self?.newTab(nil)
             }) {
-                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+                TerminalView(ghostty: self.ghostty, viewModel: self, delegate: self)
             }
         }
 

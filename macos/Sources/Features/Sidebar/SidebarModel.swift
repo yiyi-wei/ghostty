@@ -7,12 +7,13 @@ import SwiftUI
 /// Native macOS tabs stay the source of truth (each tab is still its own NSWindow in a
 /// tab group); the sidebar only *renders* `window.tabGroup.windows` and selects among them.
 /// The native tab bar is hidden via `TerminalWindow.sidebarActive`.
+@MainActor
 final class SidebarModel: ObservableObject {
     @Published private(set) var items: [SidebarItem] = []
     @Published var selection: SidebarItem.ID?
     @Published private(set) var isVisible: Bool = true
 
-    static let width: CGFloat = 232
+    nonisolated static let width: CGFloat = 232
 
     /// On by default with the transparent titlebar; `GHOSTTY_SIDEBAR=0` turns it off.
     static func isEnabled(config: Ghostty.Config) -> Bool {
@@ -42,7 +43,8 @@ final class SidebarModel: ObservableObject {
     }
 
     private weak var window: NSWindow?
-    private var timer: Timer?
+    // nonisolated(unsafe): only touched from init (main) and deinit
+    nonisolated(unsafe) private var timer: Timer?
     private var cancellables: Set<AnyCancellable> = []
 
     /// Last time each tab (by item id) was the selected tab. A `done` older than this was seen.
@@ -53,18 +55,18 @@ final class SidebarModel: ObservableObject {
 
         AgentStatusStore.shared.$entries
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
             .store(in: &cancellables)
 
         // Titles and pwd change without a single notification we can hook for every tab
         // in the group, so poll cheaply; the list is a handful of windows.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.refresh()
+            DispatchQueue.main.async { self?.refresh() }
         }
 
         let nc = NotificationCenter.default
         nc.publisher(for: Self.visibilityDidChange)
-            .sink { [weak self] _ in self?.applyVisibility(animated: true) }
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.applyVisibility(animated: true) } }
             .store(in: &cancellables)
         isVisible = Self.globalVisible
 
