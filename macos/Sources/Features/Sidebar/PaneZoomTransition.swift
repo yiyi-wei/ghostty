@@ -18,6 +18,8 @@ import SwiftUI
 final class PaneZoomTransition {
     private static let moveDuration: CFTimeInterval = 0.32
     private static let settleDuration: CFTimeInterval = 0.14
+    /// How fast the copied text leaves the moving card (it comes back live in `settle`).
+    private static let textFadeDuration: CFTimeInterval = 0.09
     private static let moveCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.9, 0.1, 1)
     /// Upper bound on waiting for SwiftUI to publish the new card rect, in 8ms steps.
     private static let maxLayoutSteps = 40
@@ -28,7 +30,13 @@ final class PaneZoomTransition {
 
     private struct Frozen {
         let surface: Ghostty.SurfaceView
+        /// The card: background colour, rounded mask and hairline. Holds `wallpaper` and `frame`.
         let layer: CALayer
+        /// `background-image` placed the way the renderer places it, re-fitted while the card
+        /// changes size so the picture is never squashed. Nil without a background image.
+        let wallpaper: CALayer?
+        /// The copied frame (text plus the picture it was rendered on), never resized.
+        let frame: CALayer
         /// The unfocused-split dim, animated away while the pane grows into focus.
         let dim: CALayer?
         let rect: CGRect
@@ -71,11 +79,12 @@ final class PaneZoomTransition {
         for surface in visible {
             guard let rect = cardRect(of: surface, in: overlay),
                   let image = snapshot(surface) else { continue }
-            let layer = makeCard(
+            let card = makeCard(
                 image: image,
                 rect: rect,
                 radius: container(of: surface)?.cardCornerRadius ?? 0,
                 scale: window.backingScaleFactor)
+            let layer = card.layer
 
             var dim: CALayer?
             if dimmed, surface !== focused {
@@ -83,14 +92,14 @@ final class PaneZoomTransition {
                 if opacity > 0 {
                     let d = CALayer()
                     d.frame = layer.bounds
-                    d.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
                     d.backgroundColor = NSColor(config.unfocusedSplitFill).cgColor
                     d.opacity = Float(opacity)
                     withoutActions { layer.addSublayer(d) }
                     dim = d
                 }
             }
-            frozen.append(Frozen(surface: surface, layer: layer, dim: dim, rect: rect))
+            frozen.append(Frozen(surface: surface, layer: layer, wallpaper: card.wallpaper,
+                                 frame: card.frame, dim: dim, rect: rect))
         }
 
         guard let mine = frozen.first(where: { $0.surface === target }) else {
@@ -169,20 +178,41 @@ final class PaneZoomTransition {
             DispatchQueue.main.async { self?.settle() }
         }
 
-        layer.add(Self.basic("bounds",
-                             from: CGRect(origin: .zero, size: from.size),
-                             to: CGRect(origin: .zero, size: rect.size)),
-                  forKey: "bounds")
-        layer.add(Self.basic("position",
-                             from: CGPoint(x: from.midX, y: from.midY),
-                             to: CGPoint(x: rect.midX, y: rect.midY)),
-                  forKey: "position")
-        if let dim = target.dim {
-            dim.add(Self.basic("opacity", from: dim.opacity, to: 0), forKey: "opacity")
+        let fromLocal = CGRect(origin: .zero, size: from.size)
+        let toLocal = CGRect(origin: .zero, size: rect.size)
+        Self.move(layer, from: from, to: rect)
+
+        // The picture is re-placed for the card's size at both ends; in between it moves on a
+        // straight line between the two placements. Both ends have the picture's own aspect
+        // ratio, so every frame in between has it too (no stretching), and both ends cover
+        // their card, so every frame in between covers it too.
+        if let wallpaper = target.wallpaper,
+           let a = Self.wallpaperRect(cardSize: from.size, scale: layer.contentsScale),
+           let b = Self.wallpaperRect(cardSize: rect.size, scale: layer.contentsScale) {
+            Self.move(wallpaper, from: a, to: b)
         }
-        Self.withoutActions {
-            layer.frame = rect
-            target.dim?.opacity = 0
+
+        // The copied frame keeps its pixel size and stays pinned to the card's top-left corner
+        // (terminal text is laid out from there), and fades out early: past the first few
+        // frames its own baked-in picture would drift against the re-fitted one.
+        let f = target.frame
+        Self.move(f,
+                  from: CGRect(x: 0, y: from.height - f.bounds.height,
+                               width: f.bounds.width, height: f.bounds.height),
+                  to: CGRect(x: 0, y: rect.height - f.bounds.height,
+                             width: f.bounds.width, height: f.bounds.height))
+        let textOut = Self.basic("opacity", from: 1, to: 0)
+        textOut.duration = Self.textFadeDuration
+        textOut.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        f.add(textOut, forKey: "opacity")
+        Self.withoutActions { f.opacity = 0 }
+
+        if let dim = target.dim {
+            Self.move(dim, from: fromLocal, to: toLocal)
+            let out = Self.basic("opacity", from: dim.opacity, to: 0)
+            out.duration = Self.moveDuration
+            dim.add(out, forKey: "opacity")
+            Self.withoutActions { dim.opacity = 0 }
         }
 
         for f in leaving {
@@ -269,15 +299,15 @@ final class PaneZoomTransition {
             && abs(a.width - b.width) < 1 && abs(a.height - b.height) < 1
     }
 
-    private static func makeCard(image: CGImage, rect: CGRect, radius: CGFloat, scale: CGFloat) -> CALayer {
+    /// A card painted like the pane's own background (colour, then `background-image` at its
+    /// opacity, placed as the renderer places it), with the copied frame on top at 1:1.
+    private static func makeCard(
+        image: CGImage, rect: CGRect, radius: CGFloat, scale: CGFloat
+    ) -> (layer: CALayer, wallpaper: CALayer?, frame: CALayer) {
+        let backdrop = SidebarBackdropStore.shared.backdrop
         let layer = CALayer()
         layer.frame = rect
-        layer.contents = image
         layer.contentsScale = scale
-        // Stretch the frozen frame into the growing/shrinking card: a brief scale reads as
-        // motion, and it crossfades into crisp reflowed text a third of a second later.
-        layer.contentsGravity = .resize
-        let backdrop = SidebarBackdropStore.shared.backdrop
         layer.backgroundColor = backdrop.baseColor.withAlphaComponent(backdrop.baseOpacity).cgColor
         layer.masksToBounds = true
         layer.cornerRadius = radius
@@ -286,7 +316,56 @@ final class PaneZoomTransition {
             layer.borderWidth = 1
             layer.borderColor = NSColor(PaneCardStyle.standard.stroke).cgColor
         }
-        return layer
+
+        var wallpaper: CALayer?
+        if let picture = backdrop.image, backdrop.imageOpacity > 0,
+           let placed = wallpaperRect(cardSize: rect.size, scale: scale) {
+            let w = CALayer()
+            w.frame = placed
+            w.contents = picture
+            w.contentsGravity = .resize
+            w.contentsScale = scale
+            w.opacity = Float(backdrop.imageOpacity)
+            w.minificationFilter = .trilinear
+            layer.addSublayer(w)
+            wallpaper = w
+        }
+
+        let frame = CALayer()
+        frame.frame = CGRect(origin: .zero, size: rect.size)
+        frame.contents = image
+        frame.contentsGravity = .resize
+        frame.contentsScale = scale
+        layer.addSublayer(frame)
+
+        return (layer, wallpaper, frame)
+    }
+
+    /// Where the renderer puts `background-image` in a pane of `cardSize`, in the card layer's
+    /// own coordinates (origin bottom-left; `SidebarBackdrop.imageRect` measures from the top).
+    private static func wallpaperRect(cardSize: CGSize, scale: CGFloat) -> CGRect? {
+        let backdrop = SidebarBackdropStore.shared.backdrop
+        guard backdrop.image != nil,
+              let r = backdrop.imageRect(in: CGRect(origin: .zero, size: cardSize),
+                                         backingScale: scale) else { return nil }
+        return CGRect(x: r.minX, y: cardSize.height - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// Animates `layer` from frame `from` to frame `to` on the zoom's curve, and leaves it there.
+    private static func move(_ layer: CALayer, from: CGRect, to: CGRect) {
+        let bounds = basic("bounds",
+                           from: CGRect(origin: .zero, size: from.size),
+                           to: CGRect(origin: .zero, size: to.size))
+        let position = basic("position",
+                             from: CGPoint(x: from.midX, y: from.midY),
+                             to: CGPoint(x: to.midX, y: to.midY))
+        for a in [bounds, position] {
+            a.duration = moveDuration
+            a.timingFunction = moveCurve
+        }
+        layer.add(bounds, forKey: "bounds")
+        layer.add(position, forKey: "position")
+        withoutActions { layer.frame = to }
     }
 
     /// A copy of the frame the surface's renderer last presented. Its layer contents is an
