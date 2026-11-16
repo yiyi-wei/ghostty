@@ -9,8 +9,8 @@ import SwiftUI
 ///
 /// Just before the swap every visible pane is frozen into a layer holding a copy of the frame
 /// its renderer last presented. After the swap the zoomed pane's frozen copy glides from its
-/// old card rect to its new one while the panes that leave fade out (and the ones that come
-/// back fade in), then the live surface — already reflowed underneath — crossfades in.
+/// old card rect to its new one over the panes that leave (on unzoom it shrinks to uncover the
+/// ones that come back), then the live surface, already reflowed underneath, is revealed.
 ///
 /// Nothing is rendered per animation frame: the terminal still resizes exactly once, exactly as
 /// it would without this.
@@ -45,7 +45,6 @@ final class PaneZoomTransition {
     private let overlay: OverlayView
     private let target: Frozen
     private let leaving: [Frozen]
-    private let oldVisible: Set<ObjectIdentifier>
     /// Live surfaces we made transparent; every one is restored in `finish`.
     private var hiddenLive: [Ghostty.SurfaceView] = []
     private var finished = false
@@ -116,42 +115,39 @@ final class PaneZoomTransition {
         let transition = PaneZoomTransition(
             overlay: overlay,
             target: mine,
-            leaving: frozen.filter { $0.surface !== target },
-            oldVisible: Set(visible.map(ObjectIdentifier.init)))
+            leaving: frozen.filter { $0.surface !== target })
         // Hide the live zoom target until its frozen copy has landed.
         transition.hideLive(target)
         running = transition
         return transition
     }
 
-    private init(overlay: OverlayView, target: Frozen, leaving: [Frozen], oldVisible: Set<ObjectIdentifier>) {
+    private init(overlay: OverlayView, target: Frozen, leaving: [Frozen]) {
         self.overlay = overlay
         self.target = target
         self.leaving = leaving
-        self.oldVisible = oldVisible
         strongSelf = self
     }
 
     /// Call immediately *after* the tree was swapped, with the new tree.
     func run(tree: SplitTree<Ghostty.SurfaceView>) {
         guard !finished else { return }
-        // Panes that come back on unzoom start transparent and fade in with the motion.
-        let appearing = ((tree.zoomed ?? tree.root)?.leaves() ?? [])
-            .filter { !oldVisible.contains(ObjectIdentifier($0)) }
-        appearing.forEach(hideLive)
-        waitForLayout(attempt: 0, appearing: appearing)
+        // Panes that come back on unzoom stay fully visible: they sit under the shrinking card
+        // and are uncovered by it. Fading them in would let the window's own (black) backing
+        // show through for a moment.
+        waitForLayout(attempt: 0)
     }
 
     // MARK: Layout hand-off
 
     /// The swap lands in SwiftUI's next update, so poll briefly for the target's new card rect.
-    private func waitForLayout(attempt: Int, appearing: [Ghostty.SurfaceView]) {
+    private func waitForLayout(attempt: Int) {
         guard !finished else { return }
         overlay.window?.contentView?.layoutSubtreeIfNeeded()
         if let rect = Self.cardRect(of: target.surface, in: overlay),
            rect.width > 1, rect.height > 1,
            !Self.same(rect, target.rect) {
-            animate(to: rect, appearing: appearing)
+            animate(to: rect)
             return
         }
         guard attempt < Self.maxLayoutSteps else {
@@ -160,13 +156,13 @@ final class PaneZoomTransition {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
-            self?.waitForLayout(attempt: attempt + 1, appearing: appearing)
+            self?.waitForLayout(attempt: attempt + 1)
         }
     }
 
     // MARK: Animation
 
-    private func animate(to rect: CGRect, appearing: [Ghostty.SurfaceView]) {
+    private func animate(to rect: CGRect) {
         guard !finished else { return }
         let from = target.rect
         let layer = target.layer
@@ -215,24 +211,9 @@ final class PaneZoomTransition {
             Self.withoutActions { dim.opacity = 0 }
         }
 
-        for f in leaving {
-            let fade = Self.basic("opacity", from: 1, to: 0)
-            fade.duration = Self.moveDuration * 0.7
-            f.layer.add(fade, forKey: "opacity")
-            Self.withoutActions { f.layer.opacity = 0 }
-        }
-
-        let appearStart = CACurrentMediaTime() + Self.moveDuration * 0.2
-        for surface in appearing {
-            guard let live = surface.layer else { continue }
-            let fade = Self.basic("opacity", from: 0, to: 1)
-            fade.beginTime = appearStart
-            fade.duration = Self.moveDuration * 0.8
-            fade.fillMode = .backwards
-            live.add(fade, forKey: "paneZoomFade")
-            Self.withoutActions { live.opacity = 1 }
-            hiddenLive.removeAll { $0 === surface }
-        }
+        // Panes that leave on zoom stay opaque under the growing card (which ends up covering
+        // all of them) and are dropped in `settle`. Fading them out would uncover the window's
+        // black backing before the card got there.
 
         CATransaction.commit()
     }
@@ -246,13 +227,16 @@ final class PaneZoomTransition {
         CATransaction.setCompletionBlock { [weak self] in
             DispatchQueue.main.async { self?.finish() }
         }
+        // The live pane comes back at full opacity *under* the card, then only the card fades.
+        // Crossfading both (card 1→0 while live 0→1) leaves the pair a quarter transparent
+        // halfway through, which read as a black blink.
+        Self.withoutActions {
+            target.surface.layer?.opacity = 1
+            for f in leaving { f.layer.removeFromSuperlayer() }
+        }
+        hiddenLive.removeAll { $0 === target.surface }
         target.layer.add(Self.basic("opacity", from: 1, to: 0), forKey: "opacity")
         Self.withoutActions { target.layer.opacity = 0 }
-        if let live = target.surface.layer {
-            live.add(Self.basic("opacity", from: 0, to: 1), forKey: "paneZoomFade")
-            Self.withoutActions { live.opacity = 1 }
-            hiddenLive.removeAll { $0 === target.surface }
-        }
         CATransaction.commit()
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 /// Trackpad gestures for one terminal window (weihan fork):
 ///
@@ -11,6 +12,11 @@ import AppKit
 /// (including its momentum tail), so the terminal never sees half of it.
 @MainActor
 final class TerminalGestures {
+    /// `log stream --level info --predicate 'subsystem == "com.weihan.ghostty" AND category == "gestures"'`
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.weihan.ghostty",
+        category: "gestures")
+
     private weak var controller: BaseTerminalController?
     private weak var sidebar: SidebarModel?
 
@@ -46,7 +52,12 @@ final class TerminalGestures {
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
-        guard let window = controller?.window, event.window === window else { return event }
+        guard let window = controller?.window, event.window === window else {
+            if event.type == .magnify, event.phase.contains(.began) {
+                Self.logger.info("pinch began on another window (event window nil: \(event.window == nil, privacy: .public))")
+            }
+            return event
+        }
         switch event.type {
         case .scrollWheel: return handleScroll(event)
         case .magnify: return handleMagnify(event)
@@ -132,10 +143,16 @@ final class TerminalGestures {
         if !pinchFired, abs(pinch) >= pinchThreshold {
             pinchFired = true
             let tree = controller.surfaceTree
+            Self.logger.info(
+                "pinch fired \(self.pinch > 0 ? "out" : "in", privacy: .public) zoomed=\(tree.zoomed != nil, privacy: .public) split=\(tree.isSplit, privacy: .public)")
             if pinch > 0 {
                 // Zoom what the pointer is over, not what has focus: no click needed first.
-                if tree.zoomed == nil, tree.isSplit, let target = surfaceUnderPointer(in: controller) {
-                    postZoomToggle(target)
+                if tree.zoomed == nil, tree.isSplit {
+                    if let target = surfaceUnderPointer(in: controller) {
+                        postZoomToggle(target)
+                    } else {
+                        Self.logger.info("pinch out: no split under the pointer")
+                    }
                 }
             } else if case let .leaf(view)? = tree.zoomed {
                 postZoomToggle(view)
@@ -153,21 +170,44 @@ final class TerminalGestures {
         let location = window.mouseLocationOutsideOfEventStream
 
         // AppKit's own hit test first: whatever a click here would land on.
+        var chain: [String] = []
         if let content = window.contentView {
             var hit = content.hitTest(content.superview?.convert(location, from: nil) ?? location)
             while let view = hit {
+                chain.append(String(describing: type(of: view)))
                 if let surface = view as? Ghostty.SurfaceView,
                    controller.surfaceTree.contains(where: { $0 === surface }) {
+                    Self.logger.info("pinch target by hit test at \(location.debugDescription, privacy: .public)")
                     return surface
                 }
                 hit = view.superview
             }
         }
 
-        // SwiftUI overlays above a split can swallow the hit test; fall back to geometry.
-        for view in controller.surfaceTree {
-            let frame = view.convert(view.bounds, to: nil)
-            if frame.contains(location) { return view }
+        // SwiftUI overlays above a split (the unfocused-split dim, the resize label…) win the
+        // hit test there, so fall back to geometry. Measure the pane by its scroll container:
+        // the surface itself lives inside the scroll view's document view.
+        var frames: [String] = []
+        for surface in controller.surfaceTree {
+            guard surface.window === window else { continue }
+            let pane: NSView = Self.paneContainer(of: surface) ?? surface
+            let frame = pane.convert(pane.bounds, to: nil)
+            frames.append(frame.debugDescription)
+            if frame.contains(location) {
+                Self.logger.info("pinch target by geometry at \(location.debugDescription, privacy: .public)")
+                return surface
+            }
+        }
+        Self.logger.info(
+            "pinch: nothing at \(location.debugDescription, privacy: .public) hit=\(chain.prefix(6).joined(separator: ">"), privacy: .public) panes=\(frames.joined(separator: " "), privacy: .public)")
+        return nil
+    }
+
+    private static func paneContainer(of surface: Ghostty.SurfaceView) -> NSView? {
+        var view = surface.superview
+        while let v = view {
+            if v is SurfaceScrollView { return v }
+            view = v.superview
         }
         return nil
     }
