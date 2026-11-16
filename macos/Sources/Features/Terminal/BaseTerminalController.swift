@@ -735,17 +735,31 @@ class BaseTerminalController: NSWindowController,
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard let targetNode = surfaceTree.root?.node(view: target) else { return }
 
+        // Freeze what is on screen before the tree swaps so the change reads as motion
+        // instead of a jump (see PaneZoomTransition).
+        let transition = PaneZoomTransition.capture(
+            tree: surfaceTree,
+            target: target,
+            focused: focusedSurface,
+            config: ghostty.config)
+
         // Toggle the zoomed state
         if surfaceTree.zoomed == targetNode {
             // Already zoomed, unzoom it
             surfaceTree = SplitTree(root: surfaceTree.root, zoomed: nil)
         } else {
             // We require that the split tree have splits
-            guard surfaceTree.isSplit else { return }
+            guard surfaceTree.isSplit else {
+                transition?.finish()
+                return
+            }
 
             // Not zoomed or different node zoomed, zoom this node
             surfaceTree = SplitTree(root: surfaceTree.root, zoomed: targetNode)
         }
+
+        transition?.run(tree: surfaceTree)
+        SidebarModel.resizeOverlayQuietUntil = ContinuousClock.now + .milliseconds(600)
 
         // Move focus to our window. Importantly this ensures that if we click the
         // reset zoom button in a tab bar of an unfocused tab that we become focused.
