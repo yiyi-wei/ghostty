@@ -24,6 +24,7 @@ extension Ghostty {
 
         @EnvironmentObject private var ghostty: Ghostty.App
         @Environment(\.ghosttyLastFocusedSurface) private var lastFocusedSurface
+        @Environment(\.paneCardStyle) private var cardStyle
 
         private var isFocusedSurface: Bool {
             surfaceFocus || lastFocusedSurface?.value === surfaceView
@@ -40,7 +41,7 @@ extension Ghostty {
                     let pubBecomeKey = center.publisher(for: NSWindow.didBecomeKeyNotification)
                     let pubResign = center.publisher(for: NSWindow.didResignKeyNotification)
 
-                    SurfaceRepresentable(view: surfaceView, size: geo.size)
+                    SurfaceRepresentable(view: surfaceView, size: geo.size, cornerRadius: cardStyle?.radius)
                         .focused($surfaceFocus)
                         .focusedValue(\.ghosttySurfacePwd, surfaceView.pwd)
                         .focusedValue(\.ghosttySurfaceView, surfaceView)
@@ -154,7 +155,7 @@ extension Ghostty {
                 if isSplit && !isFocusedSurface {
                     let overlayOpacity = ghostty.config.unfocusedSplitOpacity
                     if overlayOpacity > 0 {
-                        Rectangle()
+                        RoundedRectangle(cornerRadius: cardStyle?.radius ?? 0, style: .continuous)
                             .fill(ghostty.config.unfocusedSplitFill)
                             .allowsHitTesting(false)
                             .opacity(overlayOpacity)
@@ -565,11 +566,19 @@ extension Ghostty {
         /// The best approach is to wrap this view in a GeometryReader and pass in the geo.size.
         let size: CGSize
 
+        /// Corner radius of the card the surface is drawn in; `nil` for a square pane.
+        var cornerRadius: CGFloat?
+
         func makeNSView(context: Context) -> SurfaceScrollView {
-            return SurfaceScrollView(contentSize: size, surfaceView: view)
+            let view = SurfaceScrollView(contentSize: size, surfaceView: view)
+            view.setCardCornerRadius(cornerRadius)
+            return view
         }
 
         func updateNSView(_ scrollView: SurfaceScrollView, context: Context) {
+            if scrollView.cardCornerRadius != cornerRadius {
+                scrollView.setCardCornerRadius(cornerRadius)
+            }
             // SwiftUI may defer frame updates under system load (e.g., memory
             // pressure, heavy I/O) or when external window managers trigger rapid
             // layout changes. When that happens, the scroll view's bounds can

@@ -28,6 +28,7 @@ enum TerminalSplitOperation {
 struct TerminalSplitTreeView: View {
     let tree: SplitTree<Ghostty.SurfaceView>
     let action: (TerminalSplitOperation) -> Void
+    @Environment(\.paneCardStyle) private var cardStyle
 
     var body: some View {
         if let node = tree.zoomed ?? tree.root {
@@ -40,12 +41,15 @@ struct TerminalSplitTreeView: View {
             // the tree structure of splits it could result in bad behaviors.
             // See: https://github.com/ghostty-org/ghostty/issues/7546
             .id(node.structuralIdentity)
+            // Outer half of the card margin (each leaf adds the other half).
+            .padding(cardStyle?.inset ?? 0)
         }
     }
 }
 
 private struct TerminalSplitSubtreeView: View {
     @EnvironmentObject var ghostty: Ghostty.App
+    @Environment(\.paneCardStyle) private var cardStyle
 
     let node: SplitTree<Ghostty.SurfaceView>.Node
     var isRoot: Bool = false
@@ -69,7 +73,8 @@ private struct TerminalSplitSubtreeView: View {
                 }, set: {
                     action(.resize(.init(node: node, ratio: $0)))
                 }),
-                dividerColor: ghostty.config.splitDividerColor,
+                // Cards are separated by the gap itself; keep only the drag hitbox.
+                dividerColor: cardStyle == nil ? ghostty.config.splitDividerColor : .clear,
                 resizeIncrements: .init(width: 1, height: 1),
                 left: {
                     TerminalSplitSubtreeView(node: split.left, action: action)
@@ -91,10 +96,26 @@ private struct TerminalSplitLeaf: View {
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
 
+    @Environment(\.paneCardStyle) private var cardStyle
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
 
     var body: some View {
+        if let cardStyle {
+            leaf
+                .anchorPreference(key: PaneCardAnchorsKey.self, value: .bounds) { [$0] }
+                .overlay {
+                    RoundedRectangle(cornerRadius: cardStyle.radius, style: .continuous)
+                        .strokeBorder(cardStyle.stroke, lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+                .padding(cardStyle.inset)
+        } else {
+            leaf
+        }
+    }
+
+    private var leaf: some View {
         GeometryReader { geometry in
             Ghostty.InspectableSurface(
                 surfaceView: surfaceView,

@@ -62,48 +62,49 @@ struct SidebarBackdrop: Equatable {
 }
 
 /// Paints a `SidebarBackdrop` across `canvas` (the whole window content, titlebar included,
-/// top-left origin). `terminal` is the rect the terminal occupies in that space; the picture
-/// is placed relative to it, so the part that falls under the sidebar continues the
-/// terminal's picture across the seam.
+/// top-left origin). `anchor` is the pane whose picture the floor continues: the image is
+/// placed exactly where that pane's renderer puts it, so wherever the floor shows next to
+/// that pane (the sidebar, the gaps) it is the same picture running on. Beyond the picture's
+/// own edges it is mirrored, which stays seamless at every edge.
 struct SidebarBackdropView: View {
     let backdrop: SidebarBackdrop
     let canvas: CGSize
-    let terminal: CGRect
+    let anchor: CGRect
+    /// Where the picture area starts; the titlebar strip above stays flat colour, as it does
+    /// above the terminal.
+    let imageTop: CGFloat
+
+    private struct Tile: Hashable {
+        let col: Int
+        let row: Int
+    }
 
     var body: some View {
+        let area = CGRect(origin: .zero,
+                          size: CGSize(width: max(canvas.width, 1),
+                                       height: max(canvas.height - imageTop, 1)))
         ZStack(alignment: .topLeading) {
             Color(nsColor: backdrop.baseColor)
             if let image = backdrop.image,
                let rect = backdrop.imageRect(
-                   in: terminal,
+                   in: anchor,
                    backingScale: NSScreen.main?.backingScaleFactor ?? 2) {
-                // The terminal's picture starts below the titlebar strip (which stays the flat
-                // background colour across the whole window), so the sidebar's does too.
                 Color.clear
-                    .frame(width: max(canvas.width, 1), height: max(terminal.height, 1))
+                    .frame(width: area.width, height: area.height)
                     .overlay(alignment: .topLeading) {
-                        Image(decorative: image, scale: 1)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: rect.width, height: rect.height)
-                            .offset(x: rect.minX, y: rect.minY - terminal.minY)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        // A wide terminal can use up the picture before the window's left
-                        // edge (cover fit only overflows on one axis). Fill the leftover with
-                        // the picture mirrored at its edge: seamless where they meet, and no
-                        // shift of the part that continues the terminal.
-                        if rect.minX > 0 {
+                        ForEach(Self.tiles(rect, area: area.offsetBy(dx: 0, dy: imageTop)),
+                                id: \.self) { tile in
                             Image(decorative: image, scale: 1)
                                 .resizable()
                                 .interpolation(.high)
-                                .scaleEffect(x: -1, y: 1)
+                                .scaleEffect(x: tile.col == 0 ? 1 : -1, y: tile.row == 0 ? 1 : -1)
                                 .frame(width: rect.width, height: rect.height)
-                                .offset(x: rect.minX - rect.width, y: rect.minY - terminal.minY)
+                                .offset(x: rect.minX + CGFloat(tile.col) * rect.width,
+                                        y: rect.minY + CGFloat(tile.row) * rect.height - imageTop)
                         }
                     }
                     .clipped()
-                    .offset(y: terminal.minY)
+                    .offset(y: imageTop)
                     .opacity(backdrop.imageOpacity)
                     .transition(.opacity)
             }
@@ -112,6 +113,20 @@ struct SidebarBackdropView: View {
         .animation(.easeInOut(duration: 0.6), value: backdrop)
         .frame(width: max(canvas.width, 1), height: max(canvas.height, 1), alignment: .topLeading)
         .allowsHitTesting(false)
+    }
+
+    /// The picture plus its mirror images one step out in each direction, keeping only the
+    /// ones that reach into `area` (usually just the picture, plus one mirror on a side the
+    /// picture does not cover).
+    private static func tiles(_ rect: CGRect, area: CGRect) -> [Tile] {
+        var out: [Tile] = []
+        for row in -1...1 {
+            for col in -1...1 {
+                let r = rect.offsetBy(dx: CGFloat(col) * rect.width, dy: CGFloat(row) * rect.height)
+                if r.intersects(area) { out.append(Tile(col: col, row: row)) }
+            }
+        }
+        return out
     }
 }
 

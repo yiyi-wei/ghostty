@@ -215,13 +215,9 @@ final class SidebarModel: ObservableObject {
 
 /// The sidebar column, either full or collapsed to a rail. Both states are the tab chrome,
 /// so the native tab bar stays hidden in both and the column itself is what changes width.
+/// It paints nothing behind itself: the window floor (`SidebarColumns`) shows through.
 struct SidebarHost: View {
     @ObservedObject var model: SidebarModel
-    /// Whole window content size: the backdrop is painted as if it spanned all of it, so the
-    /// strip shows the left edge of the very picture the terminal shows.
-    let canvas: CGSize
-    /// Height of the titlebar strip above the terminal (the terminal starts below it).
-    let safeTop: CGFloat
     var onNewTab: () -> Void
 
     private var selection: Binding<SidebarItem.ID?> {
@@ -256,16 +252,6 @@ struct SidebarHost: View {
         .frame(width: model.isVisible ? SidebarModel.width : SidebarModel.railWidth,
                alignment: .topLeading)
         .transaction { $0.animation = nil }
-        .background(alignment: .topLeading) {
-            SidebarBackdropView(
-                backdrop: model.backdrop,
-                canvas: canvas,
-                terminal: CGRect(
-                    x: model.currentWidth,
-                    y: safeTop,
-                    width: max(canvas.width - model.currentWidth, 0),
-                    height: max(canvas.height - safeTop, 0)))
-        }
         .clipped()
         .ignoresSafeArea(.container, edges: .top)
     }
@@ -290,24 +276,43 @@ private struct SidebarColumns<Content: View>: View {
     @ObservedObject var model: SidebarModel
     var onNewTab: () -> Void
     @ViewBuilder var content: () -> Content
-    /// Whole content size incl. the titlebar strip; measured in the background so the
-    /// terminal keeps owning layout (a GeometryReader root would drop the ideal size the
-    /// window uses for its first frame).
-    @State private var canvas: CGSize = .zero
+    /// Height of the titlebar strip above the terminal (the terminal starts below it).
     @State private var safeTop: CGFloat = 0
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarHost(model: model, canvas: canvas, safeTop: safeTop, onNewTab: onNewTab)
+            SidebarHost(model: model, onNewTab: onNewTab)
             content()
+                .environment(\.paneCardStyle, .standard)
+        }
+        .backgroundPreferenceValue(PaneCardAnchorsKey.self) { anchors in
+            // One floor under the whole window: the sidebar and the gaps between the cards
+            // are the same picture, placed exactly as the card next to the sidebar places it,
+            // so the sidebar runs straight into that card.
+            GeometryReader { geo in
+                let canvas = geo.size
+                let cards = anchors.map { geo[$0] }
+                let card = PaneCards.anchorCard(cards)
+                    ?? CGRect(x: model.currentWidth, y: safeTop,
+                              width: max(canvas.width - model.currentWidth, 0),
+                              height: max(canvas.height - safeTop, 0))
+                SidebarBackdropView(
+                    backdrop: model.backdrop,
+                    canvas: canvas,
+                    anchor: card,
+                    imageTop: safeTop)
+                // The cards draw their own (translucent) picture; the floor must not show
+                // through them a second time.
+                .mask(PaneCardHoles(cards: cards, radius: PaneCardStyle.standard.radius)
+                    .fill(style: FillStyle(eoFill: true)))
+            }
+            .ignoresSafeArea(.container, edges: .top)
         }
         .background(
             GeometryReader { geo in
-                let size = CGSize(width: geo.size.width,
-                                  height: geo.size.height + geo.safeAreaInsets.top)
                 Color.clear
-                    .onAppear { canvas = size; safeTop = geo.safeAreaInsets.top }
-                    .onChange(of: size) { canvas = $0; safeTop = geo.safeAreaInsets.top }
+                    .onAppear { safeTop = geo.safeAreaInsets.top }
+                    .onChange(of: geo.safeAreaInsets.top) { safeTop = $0 }
             }
         )
     }

@@ -164,6 +164,20 @@ class SurfaceScrollView: NSView {
     // surface view if we have the "hidden" titlebar style.
     override var safeAreaInsets: NSEdgeInsets { return NSEdgeInsetsZero }
 
+    /// Corner radius of the pane card this surface is drawn in (sidebar mode); `nil` = square.
+    private(set) var cardCornerRadius: CGFloat?
+
+    /// Rounds the pane by masking this view's layer: the Metal layer of the surface is a
+    /// descendant, so it is clipped with everything else (scroller included).
+    func setCardCornerRadius(_ radius: CGFloat?) {
+        cardCornerRadius = radius
+        wantsLayer = true
+        guard let layer else { return }
+        layer.cornerRadius = radius ?? 0
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = radius != nil
+    }
+
     override func layout() {
         super.layout()
 
