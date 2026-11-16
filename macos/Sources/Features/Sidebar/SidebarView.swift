@@ -90,34 +90,68 @@ struct SidebarView: View {
     @Binding var selection: SidebarItem.ID?
     /// Height reserved at the top for the traffic lights (transparent titlebar).
     var titlebarHeight: CGFloat = 28
+    /// Collapsed form: glyphs only, so the column still switches tabs without a flyout.
+    var isRail: Bool = false
     var onToggleSidebar: () -> Void = {}
     var onNewTab: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
             titlebarRow
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(SidebarSection.allCases) { section in
-                        let rows = items.filter(section.contains)
-                        if !rows.isEmpty {
-                            SidebarSectionView(section: section, rows: rows, selection: $selection)
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
+            if isRail {
+                railList
+            } else {
+                fullList
             }
             footer
         }
+    }
+
+    private var fullList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(SidebarSection.allCases) { section in
+                    let rows = items.filter(section.contains)
+                    if !rows.isEmpty {
+                        SidebarSectionView(section: section, rows: rows, selection: $selection)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+        }
+    }
+
+    /// Rail: same order as the full list (needs-you first), status carried by the glyph.
+    /// Waiting rows keep their glow — that is the whole point of leaving the rail visible.
+    private var railList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
+                ForEach(railItems) { item in
+                    SidebarRailRow(item: item, isSelected: item.id == selection)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selection = item.id }
+                        .help(item.title)
+                }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var railItems: [SidebarItem] {
+        SidebarSection.allCases.flatMap { section in items.filter(section.contains) }
     }
 
     /// Shares the titlebar strip with the traffic lights; only a sidebar toggle at the trailing edge.
     private var titlebarRow: some View {
         HStack {
             Spacer()
-            ChromeButton(symbol: "sidebar.left", action: onToggleSidebar)
+            // Collapsed, the trailing edge is where the traffic lights would collide, so the
+            // expand affordance moves down to the footer.
+            if !isRail {
+                ChromeButton(symbol: "sidebar.left", action: onToggleSidebar)
+            }
         }
         .frame(height: titlebarHeight)
         .padding(.horizontal, 10)
@@ -125,11 +159,39 @@ struct SidebarView: View {
 
     private var footer: some View {
         HStack {
-            ChromeButton(symbol: "plus", action: onNewTab)
-            Spacer()
+            ChromeButton(symbol: isRail ? "sidebar.right" : "plus",
+                         action: isRail ? onToggleSidebar : onNewTab)
+            if !isRail { Spacer() }
         }
+        .frame(maxWidth: .infinity, alignment: isRail ? .center : .leading)
         .padding(.horizontal, 10)
         .padding(.bottom, 10)
+    }
+}
+
+/// One row of the collapsed rail: status glyph over nothing else, so the column stays a
+/// switch and a status light at once.
+private struct SidebarRailRow: View {
+    let item: SidebarItem
+    let isSelected: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? SidebarPalette.selectionFill
+                      : (isHovered ? SidebarPalette.hoverFill : Color.clear))
+                .frame(width: 30, height: 28)
+            if let status = item.status {
+                StatusGlyph(status: status)
+            } else {
+                Circle()
+                    .fill(SidebarPalette.directory.opacity(isSelected ? 0.9 : 0.55))
+                    .frame(width: 5, height: 5)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .onHover { isHovered = $0 }
     }
 }
 

@@ -14,6 +14,12 @@ final class SidebarModel: ObservableObject {
     @Published private(set) var isVisible: Bool = true
 
     nonisolated static let width: CGFloat = 232
+    /// Collapsed: a rail wide enough to clear the traffic lights and still hold the status
+    /// glyph of every tab, so switching tabs — and seeing which one is waiting — keeps working.
+    nonisolated static let railWidth: CGFloat = 76
+
+    /// Column width in the current state, for anything that has to reserve layout space.
+    var currentWidth: CGFloat { isVisible ? Self.width : Self.railWidth }
 
     /// On by default with the transparent titlebar; `GHOSTTY_SIDEBAR=0` turns it off.
     static func isEnabled(config: Ghostty.Config) -> Bool {
@@ -21,25 +27,28 @@ final class SidebarModel: ObservableObject {
         return config.macosTitlebarStyle == .transparent
     }
 
-    /// Hiding the sidebar brings the native tab bar back, so tabs are never invisible.
+    /// The sidebar's surface: the terminal's own background colour and background image,
+    /// so the column reads as part of the window rather than a panel on top of it.
+    @Published private(set) var backdrop = SidebarBackdrop()
+
+    /// Hiding never removes the column: it collapses to the rail. Tabs therefore always stay
+    /// reachable, and the native tab bar stays hidden in both states.
     /// Visibility is app-wide: every tab is its own window with its own model, and a
-    /// sidebar that reappears when switching tabs would be wrong.
+    /// sidebar that reappeared when switching tabs would be wrong.
     func toggle() {
         Self.globalVisible.toggle()
         NotificationCenter.default.post(name: Self.visibilityDidChange, object: nil)
     }
-
     private static var globalVisible = true
     private static let visibilityDidChange = Notification.Name("GhosttySidebarVisibilityDidChange")
 
     private func applyVisibility(animated: Bool) {
         guard isVisible != Self.globalVisible else { return }
         if animated {
-            withAnimation(.easeOut(duration: 0.18)) { isVisible = Self.globalVisible }
+            withAnimation(.easeInOut(duration: 0.16)) { isVisible = Self.globalVisible }
         } else {
             isVisible = Self.globalVisible
         }
-        (window as? TerminalWindow)?.sidebarActive = isVisible
     }
 
     private weak var window: NSWindow?
@@ -50,8 +59,16 @@ final class SidebarModel: ObservableObject {
     /// Last time each tab (by item id) was the selected tab. A `done` older than this was seen.
     private static var lastSeen: [String: Date] = [:]
 
-    init(window: NSWindow) {
+    init(window: NSWindow, config: Ghostty.Config) {
         self.window = window
+
+        SidebarBackdropStore.shared.sync(config: config)
+        backdrop = SidebarBackdropStore.shared.backdrop
+
+        SidebarBackdropStore.shared.$backdrop
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] next in self?.backdrop = next }
+            .store(in: &cancellables)
 
         AgentStatusStore.shared.$entries
             .receive(on: DispatchQueue.main)
@@ -65,6 +82,17 @@ final class SidebarModel: ObservableObject {
         }
 
         let nc = NotificationCenter.default
+        nc.publisher(for: .ghosttyConfigDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                // App-level reloads only; per-surface overrides do not restyle the chrome.
+                guard note.object == nil, let config = note.userInfo?[
+                    Notification.Name.GhosttyConfigChangeKey
+                ] as? Ghostty.Config else { return }
+                self?.configChanged(config)
+            }
+            .store(in: &cancellables)
+
         nc.publisher(for: Self.visibilityDidChange)
             .sink { [weak self] _ in DispatchQueue.main.async { self?.applyVisibility(animated: true) } }
             .store(in: &cancellables)
@@ -85,6 +113,15 @@ final class SidebarModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+    }
+
+    /// Split out so the closure above stays a one-liner: a config reload restyles the
+    /// sidebar's backdrop, and can turn the sidebar itself off.
+    private func configChanged(_ config: Ghostty.Config) {
+        SidebarBackdropStore.shared.sync(config: config)
+        if !Self.isEnabled(config: config) {
+            (window as? TerminalWindow)?.sidebarActive = false
+        }
     }
 
     static func id(for window: NSWindow) -> String {
@@ -164,22 +201,52 @@ final class SidebarModel: ObservableObject {
     }
 }
 
-/// The sidebar placed next to the terminal content, sharing the titlebar strip.
+/// The sidebar column, either full or collapsed to a rail. Both states are the tab chrome,
+/// so the native tab bar stays hidden in both and the column itself is what changes width.
 struct SidebarHost: View {
     @ObservedObject var model: SidebarModel
+    /// Whole window content size: the backdrop is painted as if it spanned all of it, so the
+    /// strip shows the left edge of the very picture the terminal shows.
+    let canvas: CGSize
     var onNewTab: () -> Void
 
+    private var selection: Binding<SidebarItem.ID?> {
+        Binding(get: { model.selection }, set: { model.select($0) })
+    }
+
     var body: some View {
-        SidebarView(
-            items: model.items,
-            selection: Binding(
-                get: { model.selection },
-                set: { model.select($0) }),
-            titlebarHeight: 28,
-            onToggleSidebar: { model.toggle() },
-            onNewTab: onNewTab)
-        .frame(width: SidebarModel.width)
-        .background(SidebarBackground())
+        ZStack(alignment: .topLeading) {
+            SidebarView(
+                items: model.items,
+                selection: selection,
+                titlebarHeight: 28,
+                onToggleSidebar: { model.toggle() },
+                onNewTab: onNewTab)
+            .frame(width: SidebarModel.width, alignment: .topLeading)
+            .opacity(model.isVisible ? 1 : 0)
+            .animation(.easeInOut(duration: 0.16), value: model.isVisible)
+
+            SidebarView(
+                items: model.items,
+                selection: selection,
+                titlebarHeight: 28,
+                isRail: true,
+                onToggleSidebar: { model.toggle() },
+                onNewTab: onNewTab)
+            .frame(width: SidebarModel.railWidth, alignment: .topLeading)
+            .opacity(model.isVisible ? 0 : 1)
+            .animation(.easeInOut(duration: 0.16), value: model.isVisible)
+        }
+        // Width is not animated: every frame of it would resize the Metal surface, which
+        // snaps rather than glides. One clean reflow, with the content cross-fading.
+        .frame(width: model.isVisible ? SidebarModel.width : SidebarModel.railWidth,
+               alignment: .topLeading)
+        .transaction { $0.animation = nil }
+        .background(alignment: .topLeading) {
+            SidebarBackdropView(backdrop: model.backdrop, canvas: canvas)
+        }
+        .clipped()
+        .ignoresSafeArea(.container, edges: .top)
     }
 }
 
@@ -202,29 +269,24 @@ private struct SidebarColumns<Content: View>: View {
     @ObservedObject var model: SidebarModel
     var onNewTab: () -> Void
     @ViewBuilder var content: () -> Content
+    /// Whole content size incl. the titlebar strip; measured in the background so the
+    /// terminal keeps owning layout (a GeometryReader root would drop the ideal size the
+    /// window uses for its first frame).
+    @State private var canvas: CGSize = .zero
 
     var body: some View {
         HStack(spacing: 0) {
-            if model.isVisible {
-                SidebarHost(model: model, onNewTab: onNewTab)
-                    .ignoresSafeArea(.container, edges: .top)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
+            SidebarHost(model: model, canvas: canvas, onNewTab: onNewTab)
             content()
         }
-    }
-}
-
-/// Slightly darker than the terminal so the sidebar reads as chrome, not content, while
-/// the window's own background-opacity/blur still shows through.
-private struct SidebarBackground: View {
-    var body: some View {
-        ZStack(alignment: .trailing) {
-            Color.black.opacity(0.18)
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(width: 0.5)
-        }
-        .ignoresSafeArea()
+        .background(
+            GeometryReader { geo in
+                let size = CGSize(width: geo.size.width,
+                                  height: geo.size.height + geo.safeAreaInsets.top)
+                Color.clear
+                    .onAppear { canvas = size }
+                    .onChange(of: size) { canvas = $0 }
+            }
+        )
     }
 }

@@ -152,6 +152,26 @@ extension Ghostty {
             return Float(v)
         }
 
+        /// `background-image`. The sidebar mirrors whatever the terminal shows behind
+        /// itself, so it needs the same picture; this is the sidebar's only use of the path.
+        var backgroundImage: ConfigPath? {
+            guard let config = self.config else { return nil }
+            var v = ghostty_config_path_s()
+            let key = "background-image"
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return nil }
+            let path = String(cString: v.path)
+            return path.isEmpty ? nil : ConfigPath(path: path, optional: v.optional)
+        }
+
+        /// `background-image-opacity` (an f32 in Zig: must be read into a Float, not a Double)
+        var backgroundImageOpacity: Double {
+            guard let config = self.config else { return 1 }
+            var v: Float = 1
+            let key = "background-image-opacity"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return Double(v)
+        }
+
         var notifyOnCommandFinish: NotifyOnCommandFinish {
             guard let config = self.config else { return .never }
             var v: UnsafePointer<Int8>?

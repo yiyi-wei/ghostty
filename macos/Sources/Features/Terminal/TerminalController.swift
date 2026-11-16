@@ -1122,10 +1122,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Vertical tab sidebar (weihan fork). Only with the transparent titlebar, where the
         // sidebar can share the titlebar strip with the traffic lights.
         let sidebar: SidebarModel? = SidebarModel.isEnabled(config: config)
-            ? SidebarModel(window: window)
+            ? SidebarModel(window: window, config: config)
             : nil
         self.sidebarModel = sidebar
-        (window as? TerminalWindow)?.sidebarActive = sidebar?.isVisible ?? false
+        // The rail replaces the native tab bar, so it stays "active" in both states.
+        (window as? TerminalWindow)?.sidebarActive = sidebar != nil
 
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
@@ -1141,7 +1142,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // without waiting for @FocusedValue to propagate through the
         // SwiftUI focus chain.
         container.initialContentSize = focusedSurface?.initialSize.map {
-            NSSize(width: $0.width + (sidebar?.isVisible == true ? SidebarModel.width : 0), height: $0.height)
+            let sidebarWidth = sidebar?.currentWidth ?? 0
+            return NSSize(width: $0.width + sidebarWidth, height: $0.height)
         }
 
         window.contentView = container
