@@ -1,0 +1,304 @@
+import AppKit
+import SwiftUI
+
+// MARK: - Model
+
+/// Agent state of a tab. `nil` on `SidebarItem.status` means a plain shell.
+enum AgentStatus: Equatable {
+    case working   // agent is busy
+    case waiting   // agent is blocked on the user
+    case done      // agent finished and the tab has not been looked at yet
+}
+
+struct SidebarItem: Identifiable, Equatable {
+    let id: String
+    var title: String
+    /// Already abbreviated (`~/…`). The view truncates the middle when it overflows.
+    var directory: String
+    var status: AgentStatus?
+}
+
+/// Fixed section order: what needs you first, then what is moving, then what finished, then the rest.
+enum SidebarSection: CaseIterable, Identifiable {
+    case needsYou, inProgress, finished, other
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .needsYou: return "需要你"
+        case .inProgress: return "进行中"
+        case .finished: return "已完成"
+        case .other: return "其他"
+        }
+    }
+
+    func contains(_ item: SidebarItem) -> Bool {
+        switch (self, item.status) {
+        case (.needsYou, .waiting?), (.inProgress, .working?), (.finished, .done?), (.other, nil):
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Palette
+
+/// Colour language taken from Ghostty's own app icon (images/Ghostty.icon):
+/// a graphite/silver body (P3 0.88 → 0.40 grey), a deep navy screen (black → indigo),
+/// and an ice-blue glowing ghost. No warm or green signal hues anywhere.
+enum SidebarVariant: String {
+    case ice      // graphite neutrals + ice-blue ghost glow for "needs you"
+    case graphite // pure monochrome; "needs you" is simply the brightest thing
+    case navy     // ice-blue signal + the icon's navy screen tint on selection
+
+    static let current = SidebarVariant(rawValue: ProcessInfo.processInfo.environment["SIDEBAR_VARIANT"] ?? "") ?? .ice
+}
+
+enum SidebarPalette {
+    private static let v = SidebarVariant.current
+
+    /// The ghost's glow in the icon, slightly desaturated so it sits on a dark terminal without shouting.
+    static let ghost = Color(red: 0.60, green: 0.78, blue: 1.00)
+    /// The icon's screen indigo.
+    static let navy = Color(red: 0.16, green: 0.24, blue: 0.78)
+
+    static var waiting: Color { v == .graphite ? Color.primary.opacity(0.95) : ghost }
+    static var waitingHeader: Color { v == .graphite ? Color.primary.opacity(0.70) : ghost.opacity(0.78) }
+    static let done = Color.primary.opacity(0.42)
+    static let working = Color.primary.opacity(0.50)
+
+    static let title = Color.primary.opacity(0.90)
+    static let titleIdle = Color.primary.opacity(0.70)
+    static let directory = Color.primary.opacity(0.38)
+    static let sectionHeader = Color.primary.opacity(0.34)
+    static let chrome = Color.primary.opacity(0.40)
+
+    static var selectionFill: Color { v == .navy ? navy.opacity(0.17) : Color.primary.opacity(0.085) }
+    static var selectionTop: Color { v == .navy ? navy.opacity(0.24) : Color.primary.opacity(0.11) }
+    static var selectionEdge: Color { v == .navy ? ghost.opacity(0.10) : Color.primary.opacity(0.07) }
+    static let hoverFill = Color.primary.opacity(0.04)
+    /// Halo around the waiting dot: a glow, not a pulse ring.
+    static var waitingGlow: Double { v == .graphite ? 0.0 : 0.55 }
+}
+
+// MARK: - Sidebar
+
+struct SidebarView: View {
+    let items: [SidebarItem]
+    @Binding var selection: SidebarItem.ID?
+    /// Height reserved at the top for the traffic lights (transparent titlebar).
+    var titlebarHeight: CGFloat = 28
+    var onToggleSidebar: () -> Void = {}
+    var onNewTab: () -> Void = {}
+
+    var body: some View {
+        VStack(spacing: 0) {
+            titlebarRow
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(SidebarSection.allCases) { section in
+                        let rows = items.filter(section.contains)
+                        if !rows.isEmpty {
+                            SidebarSectionView(section: section, rows: rows, selection: $selection)
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+            }
+            footer
+        }
+    }
+
+    /// Shares the titlebar strip with the traffic lights; only a sidebar toggle at the trailing edge.
+    private var titlebarRow: some View {
+        HStack {
+            Spacer()
+            ChromeButton(symbol: "sidebar.left", action: onToggleSidebar)
+        }
+        .frame(height: titlebarHeight)
+        .padding(.horizontal, 10)
+    }
+
+    private var footer: some View {
+        HStack {
+            ChromeButton(symbol: "plus", action: onNewTab)
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+}
+
+private struct SidebarSectionView: View {
+    let section: SidebarSection
+    let rows: [SidebarItem]
+    @Binding var selection: SidebarItem.ID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(section.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(section == .needsYou ? SidebarPalette.waitingHeader : SidebarPalette.sectionHeader)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
+
+            ForEach(rows) { item in
+                SidebarRow(item: item, isSelected: item.id == selection)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selection = item.id }
+            }
+        }
+    }
+}
+
+private struct SidebarRow: View {
+    let item: SidebarItem
+    let isSelected: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            StatusGlyph(status: item.status)
+                .frame(width: 14, height: 17)   // 17pt = title line box, so the glyph centres on the title
+            VStack(alignment: .leading, spacing: 1) {
+                titleText
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(height: 17, alignment: .leading)
+                Text(item.directory)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(SidebarPalette.directory)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .padding(.vertical, 6)
+        .background(background)
+        .onHover { isHovered = $0 }
+    }
+
+    /// The agent prefix (`π - `) repeats on every agent tab and the glyph already says "agent",
+    /// so it is kept but dimmed; the distinctive part of the title carries the row.
+    private var titleText: Text {
+        let color = item.status == nil && !isSelected ? SidebarPalette.titleIdle : SidebarPalette.title
+        let prefix = "π - "
+        guard item.title.hasPrefix(prefix) else {
+            return Text(item.title).foregroundColor(color)
+        }
+        return Text("π  ").foregroundColor(SidebarPalette.directory)
+            + Text(item.title.dropFirst(prefix.count)).foregroundColor(color)
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        if isSelected {
+            shape
+                .fill(LinearGradient(colors: [SidebarPalette.selectionTop, SidebarPalette.selectionFill],
+                                     startPoint: .top, endPoint: .bottom))
+                .overlay(shape.strokeBorder(SidebarPalette.selectionEdge, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+        } else if isHovered {
+            shape.fill(SidebarPalette.hoverFill)
+        }
+    }
+}
+
+// MARK: - Status glyphs
+
+struct StatusGlyph: View {
+    let status: AgentStatus?
+
+    var body: some View {
+        switch status {
+        case .working?: WorkingGlyph()
+        case .waiting?: WaitingGlyph()
+        case .done?: DoneGlyph()
+        case nil: Color.clear
+        }
+    }
+}
+
+/// A thin arc that turns slowly — alive, but at the volume of a system spinner.
+private struct WorkingGlyph: View {
+    private let period: Double = 1.6
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let angle = (t.truncatingRemainder(dividingBy: period) / period) * 360
+            ZStack {
+                Circle().stroke(SidebarPalette.working.opacity(0.25), lineWidth: 1.4)
+                Circle()
+                    .trim(from: 0, to: 0.3)
+                    .stroke(SidebarPalette.working, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+                    .rotationEffect(.degrees(angle))
+            }
+            .frame(width: 10, height: 10)
+        }
+    }
+}
+
+/// Small dot that glows like the icon's ghost and breathes slowly (brightness only, no expanding ring):
+/// the one thing in the sidebar allowed to ask for attention.
+private struct WaitingGlyph: View {
+    private let period: Double = 3.0
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = (sin(t / period * 2 * .pi) + 1) / 2   // 0…1, smooth
+            Circle()
+                .fill(SidebarPalette.waiting)
+                .frame(width: 7, height: 7)
+                .opacity(0.80 + 0.20 * phase)
+                .shadow(color: SidebarPalette.waiting.opacity(SidebarPalette.waitingGlow * (0.5 + 0.5 * phase)), radius: 4)
+                .frame(width: 14, height: 14)
+        }
+    }
+}
+
+/// Thin check in the same grey as the directory line: finished, not yet seen.
+/// Goes back to no glyph once the tab is visited.
+private struct DoneGlyph: View {
+    var body: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(SidebarPalette.done)
+    }
+}
+
+// MARK: - Chrome
+
+private struct ChromeButton: View {
+    let symbol: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(SidebarPalette.chrome)
+                .frame(width: 26, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isHovered ? SidebarPalette.hoverFill : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}

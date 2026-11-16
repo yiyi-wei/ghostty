@@ -61,6 +61,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
+    /// Vertical tab sidebar model; nil when the sidebar is disabled for this window.
+    private(set) var sidebarModel: SidebarModel?
+
+    @IBAction func toggleTabSidebar(_ sender: Any?) {
+        sidebarModel?.toggle()
+    }
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -1112,16 +1119,30 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             focusedSurface = view
         }
 
+        // Vertical tab sidebar (weihan fork). Only with the transparent titlebar, where the
+        // sidebar can share the titlebar strip with the traffic lights.
+        let sidebar: SidebarModel? = SidebarModel.isEnabled(config: config)
+            ? SidebarModel(window: window)
+            : nil
+        self.sidebarModel = sidebar
+        (window as? TerminalWindow)?.sidebarActive = sidebar?.isVisible ?? false
+
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            SidebarTerminalRoot(model: sidebar, onNewTab: { [weak self] in
+                self?.newTab(nil)
+            }) {
+                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            }
         }
 
         // Set the initial content size on the container so that
         // intrinsicContentSize returns the correct value immediately,
         // without waiting for @FocusedValue to propagate through the
         // SwiftUI focus chain.
-        container.initialContentSize = focusedSurface?.initialSize
+        container.initialContentSize = focusedSurface?.initialSize.map {
+            NSSize(width: $0.width + (sidebar?.isVisible == true ? SidebarModel.width : 0), height: $0.height)
+        }
 
         window.contentView = container
 

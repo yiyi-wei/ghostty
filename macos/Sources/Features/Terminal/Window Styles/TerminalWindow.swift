@@ -59,6 +59,29 @@ class TerminalWindow: NSWindow {
         windowController as? TerminalController
     }
 
+    /// When true the vertical sidebar provides the tab UI, so the native tab bar is hidden.
+    /// Tabs themselves stay native (one NSWindow per tab in a tab group).
+    var sidebarActive: Bool = false {
+        didSet {
+            guard sidebarActive != oldValue else { return }
+            for vc in titlebarAccessoryViewControllers where vc.identifier == Self.tabBarIdentifier {
+                vc.isHidden = sidebarActive
+            }
+        }
+    }
+
+    /// ⌃⌘S toggles the tab sidebar. Handled here, ahead of the surface, so it works
+    /// whatever has focus inside the window.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods == [.control, .command], event.charactersIgnoringModifiers?.lowercased() == "s",
+           let controller = terminalController, controller.sidebarModel != nil {
+            controller.toggleTabSidebar(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     /// The color assigned to this window's tab. Setting this updates the tab color indicator
     /// and marks the window's restorable state as dirty.
     var tabColor: TerminalTabColor = .none {
@@ -260,6 +283,10 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
+            if sidebarActive {
+                childViewController.isHidden = true
+                childViewController.fullScreenMinHeight = 0
+            }
             tabBarDidAppear()
         }
     }
