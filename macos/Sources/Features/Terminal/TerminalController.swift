@@ -64,6 +64,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// Vertical tab sidebar model; nil when the sidebar is disabled for this window.
     private(set) var sidebarModel: SidebarModel?
 
+    /// Trackpad swipe (sidebar) and pinch (split zoom) handling; weihan fork.
+    private var gestures: TerminalGestures?
+
     @IBAction func toggleTabSidebar(_ sender: Any?) {
         sidebarModel?.toggle()
     }
@@ -1125,6 +1128,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             ? SidebarModel(window: window, config: config)
             : nil
         self.sidebarModel = sidebar
+        self.gestures = TerminalGestures(controller: self, sidebar: sidebar)
         // The rail replaces the native tab bar, so it stays "active" in both states.
         (window as? TerminalWindow)?.sidebarActive = sidebar != nil
 

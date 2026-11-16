@@ -172,6 +172,19 @@ extension Ghostty {
             return Double(v)
         }
 
+        /// `background-image-fit` / `background-image-position`, raw enum names. The sidebar
+        /// recomputes the renderer's image placement so its strip continues the same picture.
+        var backgroundImageFit: String { enumString("background-image-fit") ?? "contain" }
+        var backgroundImagePosition: String { enumString("background-image-position") ?? "center" }
+
+        private func enumString(_ key: String) -> String? {
+            guard let config = self.config else { return nil }
+            var v: UnsafePointer<Int8>?
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))),
+                  let ptr = v else { return nil }
+            return String(cString: ptr)
+        }
+
         var notifyOnCommandFinish: NotifyOnCommandFinish {
             guard let config = self.config else { return .never }
             var v: UnsafePointer<Int8>?

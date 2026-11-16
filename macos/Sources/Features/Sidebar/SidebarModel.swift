@@ -16,7 +16,7 @@ final class SidebarModel: ObservableObject {
     nonisolated static let width: CGFloat = 232
     /// Collapsed: a rail wide enough to clear the traffic lights and still hold the status
     /// glyph of every tab, so switching tabs — and seeing which one is waiting — keeps working.
-    nonisolated static let railWidth: CGFloat = 76
+    nonisolated static let railWidth: CGFloat = 40
 
     /// Column width in the current state, for anything that has to reserve layout space.
     var currentWidth: CGFloat { isVisible ? Self.width : Self.railWidth }
@@ -38,6 +38,12 @@ final class SidebarModel: ObservableObject {
     func toggle() {
         Self.globalVisible.toggle()
         NotificationCenter.default.post(name: Self.visibilityDidChange, object: nil)
+    }
+
+    /// Swipe gestures ask for a state rather than a flip: swiping left on a rail is a no-op.
+    func setVisible(_ visible: Bool) {
+        guard visible != Self.globalVisible else { return }
+        toggle()
     }
     private static var globalVisible = true
     private static let visibilityDidChange = Notification.Name("GhosttySidebarVisibilityDidChange")
@@ -208,6 +214,8 @@ struct SidebarHost: View {
     /// Whole window content size: the backdrop is painted as if it spanned all of it, so the
     /// strip shows the left edge of the very picture the terminal shows.
     let canvas: CGSize
+    /// Height of the titlebar strip above the terminal (the terminal starts below it).
+    let safeTop: CGFloat
     var onNewTab: () -> Void
 
     private var selection: Binding<SidebarItem.ID?> {
@@ -243,7 +251,14 @@ struct SidebarHost: View {
                alignment: .topLeading)
         .transaction { $0.animation = nil }
         .background(alignment: .topLeading) {
-            SidebarBackdropView(backdrop: model.backdrop, canvas: canvas)
+            SidebarBackdropView(
+                backdrop: model.backdrop,
+                canvas: canvas,
+                terminal: CGRect(
+                    x: model.currentWidth,
+                    y: safeTop,
+                    width: max(canvas.width - model.currentWidth, 0),
+                    height: max(canvas.height - safeTop, 0)))
         }
         .clipped()
         .ignoresSafeArea(.container, edges: .top)
@@ -273,10 +288,11 @@ private struct SidebarColumns<Content: View>: View {
     /// terminal keeps owning layout (a GeometryReader root would drop the ideal size the
     /// window uses for its first frame).
     @State private var canvas: CGSize = .zero
+    @State private var safeTop: CGFloat = 0
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarHost(model: model, canvas: canvas, onNewTab: onNewTab)
+            SidebarHost(model: model, canvas: canvas, safeTop: safeTop, onNewTab: onNewTab)
             content()
         }
         .background(
@@ -284,8 +300,8 @@ private struct SidebarColumns<Content: View>: View {
                 let size = CGSize(width: geo.size.width,
                                   height: geo.size.height + geo.safeAreaInsets.top)
                 Color.clear
-                    .onAppear { canvas = size }
-                    .onChange(of: size) { canvas = $0 }
+                    .onAppear { canvas = size; safeTop = geo.safeAreaInsets.top }
+                    .onChange(of: size) { canvas = $0; safeTop = geo.safeAreaInsets.top }
             }
         )
     }

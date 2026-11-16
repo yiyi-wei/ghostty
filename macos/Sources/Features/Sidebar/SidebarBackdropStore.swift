@@ -30,12 +30,15 @@ final class SidebarBackdropStore: ObservableObject {
         next.baseColor = NSColor(config.backgroundColor)
         next.baseOpacity = config.backgroundOpacity
         next.imageOpacity = config.backgroundImageOpacity
+        next.fit = SidebarBackdrop.Fit(rawValue: config.backgroundImageFit) ?? .contain
+        next.position = config.backgroundImagePosition
 
         guard let path = config.backgroundImage?.path else {
             loadedPath = nil
             loadedStamp = nil
             generation += 1
             next.image = nil
+            next.imagePixelSize = .zero
             if next != backdrop { backdrop = next }
             return
         }
@@ -47,11 +50,12 @@ final class SidebarBackdropStore: ObservableObject {
             generation += 1
             let gen = generation
             DispatchQueue.global(qos: .utility).async {
-                let image = SidebarImageLoader.frosted(path: path)
+                let loaded = SidebarImageLoader.load(path: path)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, gen == self.generation else { return }
                     var done = self.backdrop
-                    done.image = image
+                    done.image = loaded?.0
+                    done.imagePixelSize = loaded?.1 ?? .zero
                     self.backdrop = done
                 }
             }

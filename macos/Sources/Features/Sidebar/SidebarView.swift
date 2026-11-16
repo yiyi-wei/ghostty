@@ -164,7 +164,7 @@ struct SidebarView: View {
             if !isRail { Spacer() }
         }
         .frame(maxWidth: .infinity, alignment: isRail ? .center : .leading)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, isRail ? 0 : 10)
         .padding(.bottom, 10)
     }
 }
@@ -266,11 +266,8 @@ private struct SidebarRow: View {
     private var background: some View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         if isSelected {
-            shape
-                .fill(LinearGradient(colors: [SidebarPalette.selectionTop, SidebarPalette.selectionFill],
-                                     startPoint: .top, endPoint: .bottom))
-                .overlay(shape.strokeBorder(SidebarPalette.selectionEdge, lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+            // Flat: a raised, bevelled pill read as frosted glass over the picture.
+            shape.fill(SidebarPalette.selectionFill)
         } else if isHovered {
             shape.fill(SidebarPalette.hoverFill)
         }
