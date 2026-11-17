@@ -307,7 +307,9 @@ class BaseTerminalController: NSWindowController,
         }
 
         replaceSurfaceTree(
-            newTree,
+            // Every new split rebalances the whole tree, same as equalize_splits
+            // (cmd+shift+=), so panes never end up as thin slivers.
+            newTree.equalized(),
             moveFocusTo: newView,
             moveFocusFrom: oldView,
             undoAction: "New Split")

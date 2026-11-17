@@ -218,6 +218,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// This is initialized as true so that we load the image
         /// on renderer initialization, not just on config change.
         bg_image_changed: bool = true,
+        /// Modification time of the background image file we last loaded.
+        /// Tools that rotate wallpapers rewrite the same path and then reload
+        /// the config; without this, a reload with an unchanged path keeps the
+        /// old picture, so existing splits showed stale images while new ones
+        /// loaded the fresh file.
+        bg_image_mtime: ?i128 = null,
         /// Background image vertex buffer.
         bg_image_buffer: shaderpkg.BgImage,
         /// This value is used to force-update the swap chain copy
@@ -2090,6 +2096,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 };
                 defer file.close(global.io());
 
+                self.bg_image_mtime = if (file.stat(global.io())) |stat|
+                    stat.mtime.toNanoseconds()
+                else |_|
+                    null;
+
                 // Read it
                 const contents = compat_file.readToEndAlloc(
                     file,
@@ -2155,6 +2166,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         }
 
+        fn bgImageMtime(p: configpkg.Path) ?i128 {
+            const path = switch (p) {
+                .required, .optional => |slice| slice,
+            };
+            var file = std.Io.Dir.openFileAbsolute(global.io(), path, .{}) catch return null;
+            defer file.close(global.io());
+            const stat = file.stat(global.io()) catch return null;
+            return stat.mtime.toNanoseconds();
+        }
+
         fn uploadBackgroundImage(self: *Self) !void {
             // Make sure our bg image is uploaded if it needs to be.
             if (self.bg_image) |*bg| {
@@ -2213,6 +2234,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 else
                     config.bg_image != null;
 
+            // Same path but the file was rewritten in place.
+            const bg_image_file_changed = !bg_image_changed and
+                config.bg_image != null and
+                bgImageMtime(config.bg_image.?) != self.bg_image_mtime;
+
             const old_blending = self.config.blending;
             const custom_shaders_changed = !self.config.custom_shaders.equal(config.custom_shaders);
 
@@ -2220,7 +2246,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.config = config.*;
 
             // If our background image path changed, prepare the new bg image.
-            if (bg_image_changed) try self.prepBackgroundImage();
+            if (bg_image_changed or bg_image_file_changed) try self.prepBackgroundImage();
 
             // If our background image config changed, update the vertex buffer.
             if (bg_image_config_changed) self.updateBgImageBuffer();
