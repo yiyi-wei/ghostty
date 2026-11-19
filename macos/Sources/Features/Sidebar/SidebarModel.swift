@@ -181,12 +181,26 @@ final class SidebarModel: ObservableObject {
         if selection != selectedID { selection = selectedID }
     }
 
+    /// The tab (in this window's tab group) a sidebar row currently stands for.
+    /// Resolved against the live group, so a row id that has gone away yields nothing.
+    private func window(forRow id: SidebarItem.ID) -> NSWindow? {
+        guard let window else { return nil }
+        let windows = window.tabGroup?.windows ?? [window]
+        return windows.first { Self.id(for: $0) == id }
+    }
+
+    func move(_ source: Ghostty.SurfaceView, to id: SidebarItem.ID) {
+        guard let target = window(forRow: id),
+              let controller = target.windowController as? TerminalController,
+              controller.moveSplitToWorkspace(source) else { return }
+        target.makeKeyAndOrderFront(nil)
+        refresh()
+    }
+
     /// Selects the tab with the given id inside this window's tab group.
     func select(_ id: SidebarItem.ID?) {
-        guard let id, let window else { return }
-        let windows = window.tabGroup?.windows ?? [window]
-        guard let target = windows.first(where: { Self.id(for: $0) == id }) else { return }
-        if target != window.tabGroup?.selectedWindow {
+        guard let id, let target = window(forRow: id) else { return }
+        if target != window?.tabGroup?.selectedWindow {
             target.makeKeyAndOrderFront(nil)
         }
     }
@@ -231,7 +245,9 @@ struct SidebarHost: View {
                 selection: selection,
                 titlebarHeight: 28,
                 onToggleSidebar: { model.toggle() },
-                onNewTab: onNewTab)
+                onNewTab: onNewTab,
+                onMoveSplit: model.move)
+            .allowsHitTesting(model.isVisible)
             .frame(width: SidebarModel.width, alignment: .topLeading)
             .opacity(model.isVisible ? 1 : 0)
             .animation(.easeInOut(duration: 0.16), value: model.isVisible)
@@ -242,7 +258,9 @@ struct SidebarHost: View {
                 titlebarHeight: 28,
                 isRail: true,
                 onToggleSidebar: { model.toggle() },
-                onNewTab: onNewTab)
+                onNewTab: onNewTab,
+                onMoveSplit: model.move)
+            .allowsHitTesting(!model.isVisible)
             .frame(width: SidebarModel.railWidth, alignment: .topLeading)
             .opacity(model.isVisible ? 0 : 1)
             .animation(.easeInOut(duration: 0.16), value: model.isVisible)

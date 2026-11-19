@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Model
 
@@ -94,6 +95,7 @@ struct SidebarView: View {
     var isRail: Bool = false
     var onToggleSidebar: () -> Void = {}
     var onNewTab: () -> Void = {}
+    var onMoveSplit: @MainActor (Ghostty.SurfaceView, SidebarItem.ID) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,7 +115,7 @@ struct SidebarView: View {
                 ForEach(SidebarSection.allCases) { section in
                     let rows = items.filter(section.contains)
                     if !rows.isEmpty {
-                        SidebarSectionView(section: section, rows: rows, selection: $selection)
+                        SidebarSectionView(section: section, rows: rows, selection: $selection, onMoveSplit: onMoveSplit)
                     }
                 }
             }
@@ -132,6 +134,7 @@ struct SidebarView: View {
                     SidebarRailRow(item: item, isSelected: item.id == selection)
                         .contentShape(Rectangle())
                         .onTapGesture { selection = item.id }
+                        .modifier(WorkspaceDropTarget(enabled: item.id != selection) { onMoveSplit($0, item.id) })
                         .help(item.title)
                 }
             }
@@ -199,6 +202,7 @@ private struct SidebarSectionView: View {
     let section: SidebarSection
     let rows: [SidebarItem]
     @Binding var selection: SidebarItem.ID?
+    let onMoveSplit: @MainActor (Ghostty.SurfaceView, SidebarItem.ID) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -215,7 +219,56 @@ private struct SidebarSectionView: View {
                 SidebarRow(item: item, isSelected: item.id == selection)
                     .contentShape(Rectangle())
                     .onTapGesture { selection = item.id }
+                    .modifier(WorkspaceDropTarget(enabled: item.id != selection) { onMoveSplit($0, item.id) })
             }
+        }
+    }
+}
+
+private struct WorkspaceDropTarget: ViewModifier {
+    let enabled: Bool
+    let onMove: @MainActor (Ghostty.SurfaceView) -> Void
+    @State private var targeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if enabled && targeted {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(SidebarPalette.ghost.opacity(0.75), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [.ghosttySurfaceId], delegate: WorkspaceDropDelegate(
+                enabled: enabled,
+                targeted: $targeted,
+                onMove: onMove))
+    }
+
+    private struct WorkspaceDropDelegate: DropDelegate {
+        let enabled: Bool
+        @Binding var targeted: Bool
+        let onMove: @MainActor (Ghostty.SurfaceView) -> Void
+
+        func validateDrop(info: DropInfo) -> Bool {
+            enabled && info.hasItemsConforming(to: [.ghosttySurfaceId])
+        }
+
+        func dropEntered(info: DropInfo) { targeted = true }
+        func dropExited(info: DropInfo) { targeted = false }
+        func dropUpdated(info: DropInfo) -> DropProposal? {
+            DropProposal(operation: enabled ? .move : .forbidden)
+        }
+
+        func performDrop(info: DropInfo) -> Bool {
+            targeted = false
+            guard enabled, let provider = info.itemProviders(for: [.ghosttySurfaceId]).first else { return false }
+            let move = onMove
+            _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { result in
+                guard case .success(let surface) = result else { return }
+                DispatchQueue.main.async { move(surface) }
+            }
+            return true
         }
     }
 }

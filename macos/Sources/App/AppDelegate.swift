@@ -124,6 +124,8 @@ class AppDelegate: NSObject,
     /// The ghostty global state. Only one per process.
     let ghostty: Ghostty.App
 
+    private var wallpaperConfigWatcher: WallpaperConfigWatcher?
+
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
 
@@ -245,6 +247,16 @@ class AppDelegate: NSObject,
 
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
+
+        // ghostty-bg publishes this include after it installs the new picture.
+        // Reload the whole app, including all existing panes, without a TCC-dependent hotkey.
+        if ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"] == nil {
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/ghostty/background.conf")
+            wallpaperConfigWatcher = WallpaperConfigWatcher(url: url) { [weak self] in
+                self?.ghostty.reloadConfig()
+            }
+        }
 
         // Start our update checker.
         updateController.startUpdater()
@@ -437,6 +449,7 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        wallpaperConfigWatcher?.stop()
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.

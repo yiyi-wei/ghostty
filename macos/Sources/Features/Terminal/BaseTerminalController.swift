@@ -517,7 +517,7 @@ class BaseTerminalController: NSWindowController,
     /// This also updates the undo manager to support restoring this node.
     ///
     /// This does no confirmation and assumes confirmation is already done.
-    private func removeSurfaceNode(_ node: SplitTree<Ghostty.SurfaceView>.Node) {
+    private func removeSurfaceNode(_ node: SplitTree<Ghostty.SurfaceView>.Node, balance: Bool = true) {
         // Move focus if the closed surface was focused and we have a next target
         let nextFocus: Ghostty.SurfaceView? = if node.contains(
             where: { $0 == focusedSurface }
@@ -527,8 +527,9 @@ class BaseTerminalController: NSWindowController,
             nil
         }
 
+        let remaining = surfaceTree.removing(node)
         replaceSurfaceTree(
-            surfaceTree.removing(node),
+            balance ? remaining.equalized() : remaining,
             // When a non-focused surface is removed and this window stays as the key window,
             // we should refocus the `focusedSurface` to make sure the window's firstResponder remains as it is.
             //
@@ -980,11 +981,21 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
+    /// Move a live pane into this workspace, using the native cross-window transfer path.
+    func moveSplitToWorkspace(_ source: Ghostty.SurfaceView) -> Bool {
+        guard !surfaceTree.contains(source), let root = surfaceTree.root else { return false }
+        let destination = focusedSurface.flatMap { surfaceTree.contains($0) ? $0 : nil }
+            ?? root.leftmostLeaf()
+        return splitDidDrop(source: source, destination: destination, zone: .right, balance: true)
+    }
+
+    @discardableResult
     private func splitDidDrop(
         source: Ghostty.SurfaceView,
         destination: Ghostty.SurfaceView,
-        zone: TerminalSplitDropZone
-    ) {
+        zone: TerminalSplitDropZone,
+        balance: Bool = false
+    ) -> Bool {
         // Map drop zone to split direction
         let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch zone {
         case .top: .up
@@ -1002,7 +1013,7 @@ class BaseTerminalController: NSWindowController,
                 newTree = try treeWithoutSource.inserting(view: source, at: destination, direction: direction)
             } catch {
                 Ghostty.logger.warning("failed to insert surface during drop: \(error, privacy: .public)")
-                return
+                return false
             }
 
             replaceSurfaceTree(
@@ -1010,7 +1021,7 @@ class BaseTerminalController: NSWindowController,
                 moveFocusTo: source,
                 moveFocusFrom: focusedSurface,
                 undoAction: "Move Split")
-            return
+            return true
         }
 
         // Source is not in our tree - search other windows
@@ -1028,7 +1039,7 @@ class BaseTerminalController: NSWindowController,
 
         guard let sourceController, let sourceNode else {
             Ghostty.logger.warning("source surface not found in any window during drop")
-            return
+            return false
         }
 
         // Remove from source controller's tree and add it to our tree.
@@ -1039,24 +1050,26 @@ class BaseTerminalController: NSWindowController,
             newTree = try surfaceTree.inserting(view: source, at: destination, direction: direction)
         } catch {
             Ghostty.logger.warning("failed to insert surface during cross-window drop: \(error, privacy: .public)")
-            return
+            return false
         }
 
         // Treat our undo below as a full group.
-        undoManager?.beginUndoGrouping()
-        undoManager?.setActionName("Move Split")
+        let undo = undoManager
+        undo?.beginUndoGrouping()
         defer {
-            undoManager?.endUndoGrouping()
+            undo?.setActionName("Move Split")
+            undo?.endUndoGrouping()
         }
 
         // Remove the node from the source.
-        sourceController.removeSurfaceNode(sourceNode)
+        sourceController.removeSurfaceNode(sourceNode, balance: balance)
 
         // Add in the surface to our tree
         replaceSurfaceTree(
-            newTree,
+            balance ? newTree.equalized() : newTree,
             moveFocusTo: source,
             moveFocusFrom: focusedSurface)
+        return true
     }
 
     func performAction(_ action: String, on surfaceView: Ghostty.SurfaceView) {
